@@ -1,0 +1,101 @@
+from contextlib import closing
+from pathlib import Path
+import sqlite3
+import tempfile
+import unittest
+
+from practice_log import add_entry, backup_database, connect_database, get_entry, list_entries
+
+
+class PracticeLogTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.path = Path(self.folder.name) / "practice.sqlite3"
+        self.connection = connect_database(self.path)
+        self.addCleanup(self.connection.close)
+
+    def add(self, **changes):
+        values = dict(skill="speaking", topic="一个小工具", minutes=12,
+                      note="例子太短。\nTry another example.", next_step="补充一个细节。", practiced_on="2026-10-01")
+        values.update(changes)
+        return add_entry(self.connection, **values)
+
+    def test_unicode_multiline_and_quotes_survive_reopening(self):
+        entry_id = self.add(topic="It's a tool / 日语メモ", note="第一行\n'quoted', 100%")
+        with closing(connect_database(self.path)) as reopened:
+            entry = get_entry(reopened, entry_id)
+            self.assertEqual(entry["topic"], "It's a tool / 日语メモ")
+            self.assertEqual(entry["note"], "第一行\n'quoted', 100%")
+            self.assertEqual(entry["next_step"], "补充一个细节。")
+
+    def test_filters_order_and_limit(self):
+        first = self.add(practiced_on="2026-09-30")
+        second = self.add(skill="writing", topic="A useful place", practiced_on="2026-10-01")
+        third = self.add(topic="A useful tool", practiced_on="2026-10-01")
+        self.assertEqual([row["id"] for row in list_entries(self.connection)], [third, second, first])
+        self.assertEqual([row["id"] for row in list_entries(self.connection, skill="writing", query="USEFUL", since="2026-10-01")], [second])
+        self.assertEqual([row["id"] for row in list_entries(self.connection, limit=1)], [third])
+        self.assertEqual(len(list_entries(self.connection, query="补充")), 3)
+
+    def test_keywords_are_literal_and_do_not_become_sql(self):
+        entry_id = self.add(note="Look at 100% of this example.")
+        self.assertEqual([row["id"] for row in list_entries(self.connection, query="%")], [entry_id])
+        self.assertEqual(list_entries(self.connection, query="' OR 1=1 --"), [])
+        self.assertEqual(len(list_entries(self.connection)), 1)
+
+    def test_invalid_records_do_not_add_partial_data(self):
+        for changes in [dict(skill="other"), dict(topic="  "), dict(minutes=0), dict(minutes=1.5),
+                        dict(practiced_on="2026-02-30"), dict(practiced_on="20261001"), dict(note="x" * 8001)]:
+            with self.subTest(changes=list(changes)):
+                with self.assertRaises(ValueError):
+                    self.add(**changes)
+        self.assertEqual(list_entries(self.connection), [])
+
+    def test_missing_id_and_invalid_filters(self):
+        self.assertIsNone(get_entry(self.connection, 123))
+        for kwargs in [dict(limit=0), dict(skill="other"), dict(since="2026-13-01")]:
+            with self.assertRaises(ValueError):
+                list_entries(self.connection, **kwargs)
+        with self.assertRaises(ValueError):
+            get_entry(self.connection, 0)
+
+    def test_backup_is_readable_independent_and_never_overwrites(self):
+        first = self.add()
+        destination = Path(self.folder.name) / "backups" / "snapshot.sqlite3"
+        backup_database(self.connection, destination)
+        self.add(topic="Second record")
+        with closing(connect_database(destination)) as copied:
+            self.assertEqual([row["id"] for row in list_entries(copied)], [first])
+        before = destination.read_bytes()
+        with self.assertRaises(FileExistsError):
+            backup_database(self.connection, destination)
+        self.assertEqual(destination.read_bytes(), before)
+        with self.assertRaises(FileExistsError):
+            backup_database(self.connection, self.path)
+        self.assertEqual(len(list_entries(self.connection)), 2)
+
+    def test_unrelated_and_newer_databases_are_preserved(self):
+        foreign = Path(self.folder.name) / "unrelated.sqlite3"
+        with closing(sqlite3.connect(foreign)) as other:
+            other.execute("CREATE TABLE other_notes (text TEXT)")
+            other.commit()
+        before = foreign.read_bytes()
+        with self.assertRaises(ValueError):
+            connect_database(foreign)
+        self.assertEqual(foreign.read_bytes(), before)
+        view_only = Path(self.folder.name) / "view-only.sqlite3"
+        with closing(sqlite3.connect(view_only)) as other:
+            other.execute("CREATE VIEW report AS SELECT 'keep this schema'")
+            other.commit()
+        before = view_only.read_bytes()
+        with self.assertRaises(ValueError):
+            connect_database(view_only)
+        self.assertEqual(view_only.read_bytes(), before)
+        self.connection.execute("PRAGMA user_version = 2")
+        with self.assertRaises(ValueError):
+            connect_database(self.path)
+
+
+if __name__ == "__main__":
+    unittest.main()
