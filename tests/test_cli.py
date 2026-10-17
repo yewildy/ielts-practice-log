@@ -33,7 +33,7 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn("Next: Explain one detail.", listed.stdout)
         shown = self.run_cli("show", "1")
         self.assertIn("First thought.\n补一个例子。", shown.stdout)
-        self.assertIn("Saved at:", shown.stdout)
+        self.assertIn("Created at:", shown.stdout)
         invalid = self.run_cli("add", "--skill", "writing", "--topic", "Invalid", "--minutes", "0")
         self.assertEqual(invalid.returncode, 2)
         self.assertNotIn("Traceback", invalid.stderr)
@@ -53,6 +53,32 @@ class CommandLineTests(unittest.TestCase):
         self.assertFalse(self.db.exists())
         self.assertEqual(self.run_cli("--help").returncode, 0)
         self.assertFalse(self.db.exists())
+
+    def test_edit_clear_and_error_cases_through_real_commands(self):
+        self.assertEqual(self.run_cli("add", "--skill", "speaking", "--topic", "Example",
+                                      "--minutes", "10", "--note", "Old reflection",
+                                      "--next-step", "Keep this target").returncode, 0)
+        original = self.run_cli("show", "1").stdout
+        created_at = next(line for line in original.splitlines() if line.startswith("Created at:"))
+        edited = self.run_cli("edit", "1", "--note", "新的复盘\nIt's clearer.")
+        self.assertEqual(edited.returncode, 0, edited.stderr)
+        self.assertIn("Updated practice #1", edited.stdout)
+        shown = self.run_cli("show", "1").stdout
+        self.assertIn("新的复盘\nIt's clearer.", shown)
+        self.assertIn("Keep this target", shown)
+        self.assertIn(created_at, shown)
+        self.assertEqual(self.run_cli("edit", "1", "--clear-note").returncode, 0)
+        self.assertIn("Note:\n(empty)\nNext step:\nKeep this target", self.run_cli("show", "1").stdout)
+        self.assertEqual(self.run_cli("edit", "1", "--clear-next-step").returncode, 0)
+        original = self.run_cli("show", "1").stdout
+        for arguments in [("edit", "1"), ("edit", "1", "--note", "x" * 8001),
+                          ("edit", "1", "--note", "conflict", "--clear-note"),
+                          ("edit", str(2**63), "--note", "invalid ID")]:
+            result = self.run_cli(*arguments)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+            self.assertEqual(self.run_cli("show", "1").stdout, original)
+        self.assertEqual(self.run_cli("edit", "999", "--note", "missing").returncode, 1)
 
 
 if __name__ == "__main__":

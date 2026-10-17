@@ -100,10 +100,35 @@ def list_entries(connection, skill=None, query=None, since=None, limit=20):
     ).fetchall()
 
 
+def checked_id(entry_id):
+    if type(entry_id) is not int or not 1 <= entry_id <= 2**63 - 1:
+        raise ValueError("Record ID must be between 1 and 9223372036854775807.")
+    return entry_id
+
+
 def get_entry(connection, entry_id):
-    if type(entry_id) is not int or entry_id < 1:
-        raise ValueError("Record ID must be a positive integer.")
+    checked_id(entry_id)
     return connection.execute("SELECT * FROM entries WHERE id = ?", (entry_id,)).fetchone()
+
+
+def edit_entry(connection, entry_id, note=None, next_step=None):
+    checked_id(entry_id)
+    fields, values = [], []
+    for field, value, maximum in (("note", note, 8000), ("next_step", next_step, 2000)):
+        if value is None:
+            continue
+        value = value.strip()
+        if len(value) > maximum:
+            raise ValueError(f"{field} is limited to {maximum} characters.")
+        fields.append(field + " = ?")
+        values.append(value)
+    if not fields:
+        raise ValueError("Choose --note, --next-step or a --clear-... option to edit.")
+    # Only named fields change; do not read and rewrite an omitted field.
+    with connection:
+        cursor = connection.execute("UPDATE entries SET " + ", ".join(fields) + " WHERE id = ?",
+                                    [*values, entry_id])
+    return cursor.rowcount > 0
 
 
 def backup_database(connection, destination):
@@ -144,6 +169,14 @@ def parser():
     listing.add_argument("--limit", type=int, default=20)
     show = actions.add_parser("show", help="Read one record in full")
     show.add_argument("id", type=int)
+    edit = actions.add_parser("edit", help="Update reflection or next step; keep the original practice metadata")
+    edit.add_argument("id", type=int)
+    note_options = edit.add_mutually_exclusive_group()
+    note_options.add_argument("--note", default=None)
+    note_options.add_argument("--clear-note", action="store_const", const="", dest="note")
+    next_options = edit.add_mutually_exclusive_group()
+    next_options.add_argument("--next-step", default=None)
+    next_options.add_argument("--clear-next-step", action="store_const", const="", dest="next_step")
     backup = actions.add_parser("backup", help="Save a new SQLite backup file")
     backup.add_argument("destination", type=Path)
     return command
@@ -172,7 +205,12 @@ def main(argv=None):
                     return 1
                 print(f"#{entry['id']} | {entry['practiced_on']} | {entry['skill']} | {entry['minutes']} min")
                 print(f"Topic: {entry['topic']}\nNote:\n{entry['note'] or '(empty)'}")
-                print(f"Next step:\n{entry['next_step'] or '(empty)'}\nSaved at: {entry['created_at']}")
+                print(f"Next step:\n{entry['next_step'] or '(empty)'}\nCreated at: {entry['created_at']}")
+            elif args.action == "edit":
+                if not edit_entry(connection, args.id, args.note, args.next_step):
+                    print(f"Practice #{args.id} was not found.", file=sys.stderr)
+                    return 1
+                print(f"Updated practice #{args.id}.")
             elif args.action == "backup":
                 destination = backup_database(connection, args.destination)
                 print(f"Backup saved: {destination}")

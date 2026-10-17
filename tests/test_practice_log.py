@@ -4,7 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from practice_log import add_entry, backup_database, connect_database, get_entry, list_entries
+from practice_log import add_entry, backup_database, connect_database, edit_entry, get_entry, list_entries
 
 
 class PracticeLogTests(unittest.TestCase):
@@ -74,6 +74,45 @@ class PracticeLogTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             backup_database(self.connection, self.path)
         self.assertEqual(len(list_entries(self.connection)), 2)
+
+    def test_edit_changes_only_requested_fields_and_preserves_metadata(self):
+        entry_id = self.add()
+        original = dict(get_entry(self.connection, entry_id))
+        updated_note = "补充细节。\nIt's a useful example, 100%."
+        self.assertTrue(edit_entry(self.connection, entry_id, note=updated_note))
+        with closing(connect_database(self.path)) as reopened:
+            updated = dict(get_entry(reopened, entry_id))
+        self.assertEqual(updated, {**original, "note": updated_note})
+        self.assertTrue(edit_entry(self.connection, entry_id, next_step="再录一次。"))
+        self.assertEqual(dict(get_entry(self.connection, entry_id)),
+                         {**original, "note": updated_note, "next_step": "再录一次。"})
+
+    def test_edit_can_clear_fields_without_changing_an_omitted_field(self):
+        entry_id = self.add()
+        original = dict(get_entry(self.connection, entry_id))
+        self.assertTrue(edit_entry(self.connection, entry_id, note=""))
+        self.assertEqual(dict(get_entry(self.connection, entry_id)), {**original, "note": ""})
+        self.assertTrue(edit_entry(self.connection, entry_id, next_step=""))
+        self.assertEqual(dict(get_entry(self.connection, entry_id)), {**original, "note": "", "next_step": ""})
+
+    def test_invalid_edit_does_not_partially_write_or_create_records(self):
+        entry_id = self.add()
+        original = dict(get_entry(self.connection, entry_id))
+        for arguments in [dict(note="changed", next_step="x" * 2001), dict(note="x" * 8001), {}]:
+            with self.subTest(arguments=list(arguments)):
+                with self.assertRaises(ValueError):
+                    edit_entry(self.connection, entry_id, **arguments)
+                self.assertEqual(dict(get_entry(self.connection, entry_id)), original)
+        self.assertFalse(edit_entry(self.connection, 999, note="missing"))
+        self.assertEqual(len(list_entries(self.connection)), 1)
+
+    def test_show_and_edit_reject_ids_outside_sqlites_integer_range(self):
+        for entry_id in [0, -1, True, 2**63]:
+            with self.subTest(entry_id=entry_id):
+                with self.assertRaises(ValueError):
+                    get_entry(self.connection, entry_id)
+                with self.assertRaises(ValueError):
+                    edit_entry(self.connection, entry_id, note="unchanged")
 
     def test_unrelated_and_newer_databases_are_preserved(self):
         foreign = Path(self.folder.name) / "unrelated.sqlite3"
