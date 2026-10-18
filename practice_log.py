@@ -80,10 +80,12 @@ def add_entry(connection, skill, topic, minutes, note="", next_step="", practice
     return cursor.lastrowid
 
 
-def list_entries(connection, skill=None, query=None, since=None, limit=20):
+def list_entries(connection, skill=None, query=None, since=None, limit=20, next_steps_only=False):
     if type(limit) is not int or not 1 <= limit <= 100:
         raise ValueError("Limit must be a whole number from 1 to 100.")
     filters, values = [], []
+    if next_steps_only:
+        filters.append("next_step <> ''")
     if skill is not None:
         filters.append("skill = ?")
         values.append(checked_skill(skill))
@@ -162,11 +164,13 @@ def parser():
     add.add_argument("--note", default="")
     add.add_argument("--next-step", default="")
     add.add_argument("--date", dest="practiced_on", help="Practice date, YYYY-MM-DD; defaults to today")
-    listing = actions.add_parser("list", help="Find recent records")
-    listing.add_argument("--skill", choices=SKILLS)
-    listing.add_argument("--query", help="Literal keyword in topic, note or next step")
-    listing.add_argument("--since", help="Include this date and later dates, YYYY-MM-DD")
-    listing.add_argument("--limit", type=int, default=20)
+    for name, help_text in (("list", "Find recent records"),
+                            ("review", "Review records with a non-empty next step")):
+        listing = actions.add_parser(name, help=help_text)
+        listing.add_argument("--skill", choices=SKILLS)
+        listing.add_argument("--query", help="Literal keyword in topic, note or next step")
+        listing.add_argument("--since", help="Include this date and later dates, YYYY-MM-DD")
+        listing.add_argument("--limit", type=int, default=20)
     show = actions.add_parser("show", help="Read one record in full")
     show.add_argument("id", type=int)
     edit = actions.add_parser("edit", help="Update reflection or next step; keep the original practice metadata")
@@ -190,14 +194,16 @@ def main(argv=None):
                 entry_id = add_entry(connection, args.skill, args.topic, args.minutes,
                                      args.note, args.next_step, args.practiced_on)
                 print(f"Saved practice #{entry_id}.")
-            elif args.action == "list":
-                entries = list_entries(connection, args.skill, args.query, args.since, args.limit)
+            elif args.action in ("list", "review"):
+                reviewing = args.action == "review"
+                entries = list_entries(connection, args.skill, args.query, args.since, args.limit,
+                                       next_steps_only=reviewing)
                 if not entries:
-                    print("No matching practice records.")
+                    print("No matching records with a next step." if reviewing else "No matching practice records.")
                 for entry in entries:
                     print(f"#{entry['id']} | {entry['practiced_on']} | {entry['skill']} | {entry['minutes']} min | {single_line(entry['topic'])}")
                     if entry["next_step"]:
-                        print("  Next: " + single_line(entry["next_step"]))
+                        print("  Next: " + single_line(entry["next_step"], limit=120 if reviewing else 70))
             elif args.action == "show":
                 entry = get_entry(connection, args.id)
                 if entry is None:

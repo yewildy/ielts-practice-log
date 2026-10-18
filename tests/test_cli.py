@@ -52,7 +52,47 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertFalse(self.db.exists())
         self.assertEqual(self.run_cli("--help").returncode, 0)
+        self.assertEqual(self.run_cli("review", "--help").returncode, 0)
         self.assertFalse(self.db.exists())
+
+    def test_review_uses_filters_before_limit_without_changing_the_database(self):
+        target = ("检查 100% 的例子。\n" + "A longer next step. " * 9).strip()
+        for topic, skill, next_step, practiced_on in [
+                ("Earlier writing", "writing", target, "2026-10-01"),
+                ("Speaking target", "speaking", "Explain one detail.", "2026-10-02"),
+                ("No target", "writing", "", "2026-10-03")]:
+            added = self.run_cli("add", "--skill", skill, "--topic", topic, "--minutes", "10",
+                                 "--next-step", next_step, "--date", practiced_on)
+            self.assertEqual(added.returncode, 0, added.stderr)
+        before = self.db.read_bytes()
+        reviewed = self.run_cli("review", "--skill", "writing", "--query", "100%",
+                                "--since", "2026-10-01", "--limit", "1")
+        self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
+        self.assertIn("#1 | 2026-10-01 | writing", reviewed.stdout)
+        self.assertIn("Next: 检查 100% 的例子。 A longer next step.", reviewed.stdout)
+        preview = reviewed.stdout.splitlines()[1].removeprefix("  Next: ")
+        self.assertEqual(len(preview), 120)
+        self.assertTrue(preview.endswith("…"))
+        self.assertNotIn("No target", reviewed.stdout)
+        self.assertNotIn("Speaking target", reviewed.stdout)
+        self.assertIn(target, self.run_cli("show", "1").stdout)
+        self.assertEqual(self.db.read_bytes(), before)
+        invalid = self.run_cli("review", "--limit", "0")
+        self.assertEqual(invalid.returncode, 2)
+        self.assertNotIn("Traceback", invalid.stderr)
+        self.assertEqual(self.db.read_bytes(), before)
+
+    def test_review_empty_state_and_clearing_a_target_keep_the_record(self):
+        empty = self.run_cli("review")
+        self.assertEqual(empty.returncode, 0, empty.stderr)
+        self.assertEqual(empty.stdout.strip(), "No matching records with a next step.")
+        self.assertEqual(self.run_cli("add", "--skill", "speaking", "--topic", "A tool",
+                                     "--minutes", "10", "--next-step", "Add a detail.").returncode, 0)
+        self.assertIn("Add a detail.", self.run_cli("review").stdout)
+        self.assertEqual(self.run_cli("edit", "1", "--clear-next-step").returncode, 0)
+        self.assertEqual(self.run_cli("review").stdout, empty.stdout)
+        self.assertIn("A tool", self.run_cli("list").stdout)
+        self.assertEqual(self.run_cli("show", "1").returncode, 0)
 
     def test_edit_clear_and_error_cases_through_real_commands(self):
         self.assertEqual(self.run_cli("add", "--skill", "speaking", "--topic", "Example",

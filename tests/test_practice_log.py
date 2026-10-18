@@ -44,6 +44,35 @@ class PracticeLogTests(unittest.TestCase):
         self.assertEqual(list_entries(self.connection, query="' OR 1=1 --"), [])
         self.assertEqual(len(list_entries(self.connection)), 1)
 
+    def test_review_filters_empty_targets_before_limit_and_does_not_write(self):
+        first = self.add(practiced_on="2026-09-30", next_step="An older target")
+        second = self.add(practiced_on="2026-10-01", next_step="A newer target")
+        third = self.add(practiced_on="2026-10-01", next_step="Same date, later ID")
+        self.add(practiced_on="2026-10-02", next_step=" \n\t ")
+        before = [dict(row) for row in list_entries(self.connection)]
+        changes = self.connection.total_changes
+        rows = list_entries(self.connection, limit=1, next_steps_only=True)
+        self.assertEqual([row["id"] for row in rows], [third])
+        self.assertEqual([row["id"] for row in list_entries(self.connection, next_steps_only=True)],
+                         [third, second, first])
+        self.assertEqual(self.connection.total_changes, changes)
+        self.assertEqual([dict(row) for row in list_entries(self.connection)], before)
+
+    def test_review_combines_filters_and_reflects_target_edits(self):
+        wanted = self.add(skill="writing", topic="A useful place", next_step="Check 100% of the examples.")
+        self.add(skill="speaking", next_step="Check 100% of the examples.")
+        self.add(skill="writing", practiced_on="2026-09-30", next_step="Check 100% of the examples.")
+        self.add(skill="writing", next_step="")
+        filters = dict(skill="writing", query="100%", since="2026-10-01", next_steps_only=True)
+        self.assertEqual([row["id"] for row in list_entries(self.connection, **filters)], [wanted])
+        self.assertEqual(list_entries(self.connection, query="' OR 1=1 --", next_steps_only=True), [])
+        self.assertTrue(edit_entry(self.connection, wanted, next_step=""))
+        with closing(connect_database(self.path)) as reopened:
+            self.assertEqual(list_entries(reopened, **filters), [])
+            self.assertIsNotNone(get_entry(reopened, wanted))
+        self.assertTrue(edit_entry(self.connection, wanted, next_step="Try 100% again."))
+        self.assertEqual([row["id"] for row in list_entries(self.connection, **filters)], [wanted])
+
     def test_invalid_records_do_not_add_partial_data(self):
         for changes in [dict(skill="other"), dict(topic="  "), dict(minutes=0), dict(minutes=1.5),
                         dict(practiced_on="2026-02-30"), dict(practiced_on="20261001"), dict(note="x" * 8001)]:
