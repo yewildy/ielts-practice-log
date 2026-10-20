@@ -40,6 +40,21 @@ python practice_log.py backup data/practice-backup-2026-10-17.sqlite3
 
 Backups are new SQLite files; existing files are never overwritten. To continue from a backup, copy it to a working file and point `--db` at that copy. Database files and `data/` are covered by `.gitignore`.
 
+## 导出完整文字 / Export full records
+
+```sh
+python practice_log.py --db data/demo.sqlite3 export data/demo-notes.json
+python practice_log.py export data/writing-notes.json --skill writing --query "example" --since 2026-10-01
+```
+
+`export` 把全部匹配记录写入新的 UTF-8 JSON 文件，不受列表的 20/100 条限制。可组合使用 `--skill`、`--query` 和 `--since`，排序与 `list` 相同；没有匹配时写入空数组 `[]`。已有文件（包括数据库本身）不会覆盖。
+
+`export` writes every matching record to a new UTF-8 JSON file, without the list's 20/100-record limits. Combine `--skill`, `--query` and `--since` as needed. Ordering matches `list`; no matches produce an empty array `[]`. Existing files, including the database itself, are never overwritten.
+
+文件是一个记录数组，每条包含 `id`、`skill`、`topic`、`minutes`、`note`、`next_step`、`practiced_on` 和 `created_at`。中文、引号、换行与完整复盘都会保留；导出不修改数据库。示例输出放在已忽略的 `data/` 中，供自己查看或交给其他程序读取。目前没有 JSON 导入命令，恢复数据仍用上面的 SQLite 备份。
+
+The file is an array of records, each with `id`, `skill`, `topic`, `minutes`, `note`, `next_step`, `practiced_on` and `created_at`. Unicode, quotes, line breaks and full reflections are preserved; exporting changes no database records. The examples write into the ignored `data/` directory for personal reading or use by another program. There is no JSON import command yet; use SQLite backups for restoration.
+
 ## 练习前回看目标 / Review before practicing
 
 ```sh
@@ -81,6 +96,8 @@ The practice date, topic, duration and creation time stay unchanged. `Created at
 
 `review` 复用列表查询，在 SQL 的 `WHERE` 中排除空目标，再排序和限制条数。因此新记录没有目标时，不会挤掉较早的有效目标；不新增表或修改记录。 / `review` reuses the list query, excluding empty targets in SQL's `WHERE` before sorting and limiting. Newer records without a target do not crowd out older goals. It adds no tables and changes no records.
 
+`export` 复用同一查询，但不传条数上限，再用 `json.dumps` 编码完整字段，而非列表预览。查询与编码成功后，才以独占创建方式打开目标文件。 / `export` reuses that query without a row limit, then encodes full fields with `json.dumps` instead of list previews. Only after querying and encoding does it exclusively create the destination file.
+
 备份使用 [`sqlite3.Connection.backup`](https://docs.python.org/3.12/library/sqlite3.html#sqlite3.Connection.backup)，不用自己拼接或导出 SQL。连接用完会关闭。 / Backups use [`sqlite3.Connection.backup`](https://docs.python.org/3.12/library/sqlite3.html#sqlite3.Connection.backup), with connections closed after use.
 
 运行检查： / Run the checks:
@@ -89,7 +106,7 @@ The practice date, topic, duration and creation time stay unchanged. `Created at
 python -m unittest discover -s tests -v
 ```
 
-检查覆盖文字往返保存、组合筛选、目标回看与预览、修改与清空、原始信息保留、输入错误、备份独立性、拒绝覆盖，以及真实命令行流程。测试使用临时数据库。 / Checks cover text round-trips, combined filters, goal review and previews, editing and clearing, original metadata preservation, invalid input, independent backups, overwrite protection and real command-line workflows. They use temporary databases.
+检查覆盖文字往返保存、组合筛选、目标回看与预览、修改与清空、完整 JSON 导出、原始信息保留、输入错误、备份独立性、拒绝覆盖，以及真实命令行流程。导出检查包含超过 100 条记录的情况。测试使用临时数据库。 / Checks cover text round-trips, combined filters, goal review and previews, editing and clearing, full JSON exports, original metadata preservation, invalid input, independent backups, overwrite protection and real command-line workflows. Export checks include more than 100 records. They use temporary databases.
 
 一个小练习：在 `main()` 中把 `review` 的预览长度从 120 改为 90，录入一条目标较长的合成记录，比较 `review` 与 `show` 的输出，确认数据库里的文字没有变；再更新说明。 / For a small code exercise, change the review preview length from 120 to 90 in `main()`. Add a synthetic record with a long target, compare `review` with `show`, and confirm that the stored text stays unchanged. Then update the documentation.
 

@@ -1,10 +1,11 @@
 from contextlib import closing
 from pathlib import Path
+import json
 import sqlite3
 import tempfile
 import unittest
 
-from practice_log import add_entry, backup_database, connect_database, edit_entry, get_entry, list_entries
+from practice_log import add_entry, backup_database, connect_database, edit_entry, export_entries, get_entry, list_entries
 
 
 class PracticeLogTests(unittest.TestCase):
@@ -103,6 +104,49 @@ class PracticeLogTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             backup_database(self.connection, self.path)
         self.assertEqual(len(list_entries(self.connection)), 2)
+
+    def test_export_keeps_all_fields_and_more_than_one_hundred_records(self):
+        for number in range(105):
+            self.add(topic=f"日语メモ {number}", note="First line\nIt's quoted: \"hello\" / 100%")
+        changes = self.connection.total_changes
+        destination = Path(self.folder.name) / "exports" / "journal.json"
+        actual_path, count = export_entries(self.connection, destination)
+        self.assertEqual((actual_path, count), (destination.resolve(), 105))
+        exported = json.loads(destination.read_text(encoding="utf-8"))
+        self.assertEqual([row["id"] for row in exported], list(range(105, 0, -1)))
+        self.assertEqual(exported[0], dict(get_entry(self.connection, 105)))
+        self.assertEqual(exported[-1], dict(get_entry(self.connection, 1)))
+        self.assertIn("日语メモ", destination.read_text(encoding="utf-8"))
+        self.assertEqual(self.connection.total_changes, changes)
+        self.assertEqual(len(list_entries(self.connection)), 20)
+
+    def test_export_combines_literal_filters_and_can_save_an_empty_array(self):
+        wanted = self.add(skill="writing", topic="Check examples", note="Keep 100% of this.")
+        self.add(skill="speaking", note="100%")
+        self.add(skill="writing", note="100%", practiced_on="2026-09-30")
+        self.add(skill="writing", note="No percentage here.")
+        destination = Path(self.folder.name) / "selected.json"
+        _, count = export_entries(self.connection, destination, skill="writing", query="100%", since="2026-10-01")
+        self.assertEqual(count, 1)
+        self.assertEqual(json.loads(destination.read_text(encoding="utf-8")), [dict(get_entry(self.connection, wanted))])
+        empty = Path(self.folder.name) / "empty.json"
+        self.assertEqual(export_entries(self.connection, empty, query="' OR 1=1 --")[1], 0)
+        self.assertEqual(json.loads(empty.read_text(encoding="utf-8")), [])
+
+    def test_export_refuses_existing_paths_and_validates_before_creating_output(self):
+        self.add()
+        existing = Path(self.folder.name) / "existing.json"
+        existing.write_text("Keep this file.", encoding="utf-8")
+        for destination in [existing, self.path]:
+            before = destination.read_bytes()
+            with self.assertRaises(FileExistsError):
+                export_entries(self.connection, destination)
+            self.assertEqual(destination.read_bytes(), before)
+        destination = Path(self.folder.name) / "not-created" / "invalid.json"
+        for filters in [dict(skill="other"), dict(since="2026-02-30")]:
+            with self.assertRaises(ValueError):
+                export_entries(self.connection, destination, **filters)
+            self.assertFalse(destination.parent.exists())
 
     def test_edit_changes_only_requested_fields_and_preserves_metadata(self):
         entry_id = self.add()

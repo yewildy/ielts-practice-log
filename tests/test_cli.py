@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import os
 import subprocess
 import sys
@@ -53,6 +54,8 @@ class CommandLineTests(unittest.TestCase):
         self.assertFalse(self.db.exists())
         self.assertEqual(self.run_cli("--help").returncode, 0)
         self.assertEqual(self.run_cli("review", "--help").returncode, 0)
+        self.assertEqual(self.run_cli("export", "--help").returncode, 0)
+        self.assertEqual(self.run_cli("export").returncode, 2)
         self.assertFalse(self.db.exists())
 
     def test_review_uses_filters_before_limit_without_changing_the_database(self):
@@ -93,6 +96,47 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(self.run_cli("review").stdout, empty.stdout)
         self.assertIn("A tool", self.run_cli("list").stdout)
         self.assertEqual(self.run_cli("show", "1").returncode, 0)
+
+    def test_export_full_text_filtering_and_overwrite_protection_through_real_commands(self):
+        topic = "A useful tool / 日语メモ"
+        reflection = "It's a tool.\nCheck \"example\", 100%."
+        next_step = "补充细节。 " * 30
+        for skill in ["writing", "speaking"]:
+            added = self.run_cli("add", "--skill", skill, "--topic", topic, "--minutes", "12",
+                                 "--note", reflection, "--next-step", next_step, "--date", "2026-10-01")
+            self.assertEqual(added.returncode, 0, added.stderr)
+        before = self.db.read_bytes()
+        destination = Path(self.folder.name) / "exports with spaces" / "复盘.json"
+        result = self.run_cli("export", str(destination), "--skill", "writing", "--query", "100%",
+                              "--since", "2026-10-01")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Records exported: 1.", result.stdout)
+        records = json.loads(destination.read_text(encoding="utf-8"))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["topic"], topic)
+        self.assertEqual(records[0]["note"], reflection)
+        self.assertEqual(records[0]["next_step"], next_step.strip())
+        self.assertIn("created_at", records[0])
+        self.assertEqual(self.db.read_bytes(), before)
+        exported = destination.read_bytes()
+        refused = self.run_cli("export", str(destination))
+        self.assertEqual(refused.returncode, 2)
+        self.assertNotIn("Traceback", refused.stderr)
+        self.assertEqual(destination.read_bytes(), exported)
+        self.assertEqual(self.run_cli("export", str(self.db)).returncode, 2)
+        self.assertEqual(self.db.read_bytes(), before)
+
+    def test_export_no_matches_and_invalid_filters(self):
+        destination = Path(self.folder.name) / "empty.json"
+        result = self.run_cli("export", str(destination), "--skill", "writing")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Records exported: 0.", result.stdout)
+        self.assertEqual(json.loads(destination.read_text(encoding="utf-8")), [])
+        invalid = Path(self.folder.name) / "invalid.json"
+        result = self.run_cli("export", str(invalid), "--since", "2026-02-30")
+        self.assertEqual(result.returncode, 2)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertFalse(invalid.exists())
 
     def test_edit_clear_and_error_cases_through_real_commands(self):
         self.assertEqual(self.run_cli("add", "--skill", "speaking", "--topic", "Example",

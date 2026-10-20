@@ -3,6 +3,7 @@
 import argparse
 from contextlib import closing
 from datetime import date, datetime
+import json
 from pathlib import Path
 import sqlite3
 import sys
@@ -81,7 +82,8 @@ def add_entry(connection, skill, topic, minutes, note="", next_step="", practice
 
 
 def list_entries(connection, skill=None, query=None, since=None, limit=20, next_steps_only=False):
-    if type(limit) is not int or not 1 <= limit <= 100:
+    # Export uses None to read all matches; CLI lists still require 1-100.
+    if limit is not None and (type(limit) is not int or not 1 <= limit <= 100):
         raise ValueError("Limit must be a whole number from 1 to 100.")
     filters, values = [], []
     if next_steps_only:
@@ -96,9 +98,10 @@ def list_entries(connection, skill=None, query=None, since=None, limit=20, next_
         filters.append("practiced_on >= ?")
         values.append(checked_date(since))
     where = " WHERE " + " AND ".join(filters) if filters else ""
+    limit_sql = " LIMIT ?" if limit is not None else ""
     return connection.execute(
-        "SELECT * FROM entries" + where + " ORDER BY practiced_on DESC, id DESC LIMIT ?",
-        [*values, limit],
+        "SELECT * FROM entries" + where + " ORDER BY practiced_on DESC, id DESC" + limit_sql,
+        [*values, limit] if limit is not None else values,
     ).fetchall()
 
 
@@ -148,6 +151,21 @@ def backup_database(connection, destination):
     return destination
 
 
+def export_entries(connection, destination, skill=None, query=None, since=None):
+    entries = [dict(row) for row in list_entries(connection, skill, query, since, limit=None)]
+    text = json.dumps(entries, ensure_ascii=False, indent=2) + "\n"
+    destination = Path(destination).expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    output = destination.open("x", encoding="utf-8", newline="\n")
+    try:
+        with output:
+            output.write(text)
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    return destination, len(entries)
+
+
 def single_line(value, limit=70):
     value = " ".join(value.split())
     return value if len(value) <= limit else value[:limit - 1] + "…"
@@ -165,12 +183,16 @@ def parser():
     add.add_argument("--next-step", default="")
     add.add_argument("--date", dest="practiced_on", help="Practice date, YYYY-MM-DD; defaults to today")
     for name, help_text in (("list", "Find recent records"),
-                            ("review", "Review records with a non-empty next step")):
+                            ("review", "Review records with a non-empty next step"),
+                            ("export", "Save all matching records as readable JSON")):
         listing = actions.add_parser(name, help=help_text)
         listing.add_argument("--skill", choices=SKILLS)
         listing.add_argument("--query", help="Literal keyword in topic, note or next step")
         listing.add_argument("--since", help="Include this date and later dates, YYYY-MM-DD")
-        listing.add_argument("--limit", type=int, default=20)
+        if name == "export":
+            listing.add_argument("destination", type=Path, help="New UTF-8 JSON file; existing files are refused")
+        else:
+            listing.add_argument("--limit", type=int, default=20)
     show = actions.add_parser("show", help="Read one record in full")
     show.add_argument("id", type=int)
     edit = actions.add_parser("edit", help="Update reflection or next step; keep the original practice metadata")
@@ -220,6 +242,9 @@ def main(argv=None):
             elif args.action == "backup":
                 destination = backup_database(connection, args.destination)
                 print(f"Backup saved: {destination}")
+            elif args.action == "export":
+                destination, count = export_entries(connection, args.destination, args.skill, args.query, args.since)
+                print(f"Records exported: {count}. File: {destination}")
         return 0
     except (ValueError, OSError, sqlite3.Error) as error:
         print(f"Error: {error}", file=sys.stderr)
